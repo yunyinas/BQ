@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import shutil
+import logging
+import sys
+from logging import basicConfig, info, error
+
+# 配置日志
+basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+
+class Colors:
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    MAGENTA = '\033[95m'  # 粉色
+    NC = '\033[0m'  # 重置颜色
+
+def list_pak_files(directory):
+    """获取目录中所有.pak文件并返回带序号的列表"""
+    if not os.path.exists(directory):
+        error(f"{Colors.RED}文件目录不存在：{directory}{Colors.NC}")
+        return []
+    pak_list = []
+    for idx, f in enumerate(os.listdir(directory), 1):
+        file_path = os.path.join(directory, f)
+        if f.endswith('.pak') and os.path.isfile(file_path):
+            pak_list.append((idx, file_path))
+    return pak_list
+
+def select_pak_file(pak_files):
+    """让用户选择要解包的.pak文件"""
+    if not pak_files:
+        print(f"{Colors.RED}没有找到可用的.pak文件{Colors.NC}")
+        return None
+    
+    print(f"\n{Colors.MAGENTA}===== 可选PAK文件列表 =====")
+    print("0. 取消操作")
+    for idx, (_, path) in enumerate(pak_files, 1):
+        print(f"{idx}) {os.path.basename(path)}")
+    
+    try:
+        choice = int(input(f"\n{Colors.YELLOW}请输入文件序号（0-{len(pak_files)}）：{Colors.NC}"))
+        if choice == 0:
+            print(f"{Colors.RED}已取消操作{Colors.NC}")
+            return None
+        elif 1 <= choice <= len(pak_files):
+            selected_path = pak_files[choice - 1][1]
+            print(f"{Colors.GREEN}已选择：{os.path.basename(selected_path)}{Colors.NC}")
+            return selected_path
+        else:
+            print(f"{Colors.RED}输入序号超出范围，请重新选择{Colors.NC}")
+            return None
+    except ValueError:
+        print(f"{Colors.RED}输入无效，请输入数字{Colors.NC}")
+        return None
+
+def check_urpack_tool(tool_path):
+    """检查urpack工具是否存在且可执行"""
+    if not os.path.exists(tool_path):
+        error(f"{Colors.RED}解包工具不存在：{tool_path}{Colors.NC}")
+        return False
+    if not os.access(tool_path, os.X_OK):
+        print(f"{Colors.YELLOW}工具无执行权限，尝试修复...{Colors.NC}")
+        try:
+            subprocess.run(["chmod", "+x", tool_path], check=True)
+            print(f"{Colors.GREEN}权限修复成功{Colors.NC}")
+            return True
+        except subprocess.CalledProcessError:
+            error(f"{Colors.RED}无法修复工具权限：{tool_path}{Colors.NC}")
+            return False
+    return True
+
+def extract_uexp(file_path, output_dir, tool_path):
+    """解包UEXP文件并整理输出结构"""
+    # 创建输出目录
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"\n{Colors.MAGENTA}===== 开始解包 =====")
+    print(f"源文件：{os.path.basename(file_path)}")
+    print(f"输出目录：{output_dir}{Colors.NC}")
+
+    try:
+        # 执行解包命令并实时输出日志
+        process = subprocess.Popen(
+            [tool_path, '-a', file_path, output_dir],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+
+        # 实时显示解包进度
+        print(f"\n{Colors.YELLOW}解包进度：")
+        for line in process.stdout:
+            print(line.strip())  # 输出工具原始日志
+
+        process.wait()
+        if process.returncode != 0:
+            print(f"{Colors.RED}解包失败（返回码：{process.returncode}）{Colors.NC}")
+            return False
+
+        # 整理文件结构（移动group_*目录下的文件到根目录）
+        print(f"\n{Colors.YELLOW}开始整理文件结构...{Colors.NC}")
+        for root, dirs, _ in os.walk(output_dir, topdown=False):
+            for dir_name in dirs:
+                if dir_name.startswith('group_'):
+                    group_path = os.path.join(root, dir_name)
+                    for item in os.listdir(group_path):
+                        src = os.path.join(group_path, item)
+                        dst = os.path.join(output_dir, item)
+                        if os.path.exists(dst):
+                            os.remove(dst)
+                        shutil.move(src, output_dir)
+                    os.rmdir(group_path)
+
+        print(f"\n{Colors.GREEN}✅ UEXP解包完成！文件已保存到：{output_dir}{Colors.NC}")
+        return True
+
+    except Exception as e:
+        print(f"{Colors.RED}解包出错：{str(e)}{Colors.NC}")
+        return False
+
+def main():
+    # 路径配置（根据实际环境修改）
+    CLOUD_V1_ROOT = "/data/user/0/com.termux/files/home/1"
+    TOOL_DIR = os.path.join(CLOUD_V1_ROOT, "")
+    URPACK_TOOL = os.path.join(TOOL_DIR, "urpack")  # uexp解包工具路径
+    PAK_DIR = "/storage/emulated/0/云吟工作区/paks"  # 存放pak文件的目录
+    UEXP_EXTRACT_DIR = "/storage/emulated/0/云吟工作区/uexp解包打包/uexp解包"  # 解包输出目录
+
+    # 初始化检查
+    print(f"{Colors.MAGENTA}===== UEXP专用解包工具 =====")
+    
+    # 检查主目录和工具目录
+    if not os.path.exists(CLOUD_V1_ROOT):
+        error(f"{Colors.RED}主目录不存在：{CLOUD_V1_ROOT}{Colors.NC}")
+        sys.exit(1)
+    if not os.path.exists(TOOL_DIR):
+        error(f"{Colors.RED}工具目录不存在：{TOOL_DIR}{Colors.NC}")
+        sys.exit(1)
+    
+    # 检查urpack工具
+    if not check_urpack_tool(URPACK_TOOL):
+        sys.exit(1)
+    
+    # 检查并创建输出目录
+    if not os.path.exists(PAK_DIR):
+        os.makedirs(PAK_DIR, exist_ok=True)
+        print(f"{Colors.GREEN}创建pak文件目录：{PAK_DIR}{Colors.NC}")
+    if not os.path.exists(UEXP_EXTRACT_DIR):
+        os.makedirs(UEXP_EXTRACT_DIR, exist_ok=True)
+        print(f"{Colors.GREEN}创建解包输出目录：{UEXP_EXTRACT_DIR}{Colors.NC}")
+
+    # 获取并选择pak文件
+    pak_files = list_pak_files(PAK_DIR)
+    selected_pak = select_pak_file(pak_files)
+    if not selected_pak:
+        sys.exit(0)
+
+    # 执行解包
+    extract_uexp(selected_pak, UEXP_EXTRACT_DIR, URPACK_TOOL)
+
+if __name__ == "__main__":
+    main()
